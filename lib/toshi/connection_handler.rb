@@ -232,7 +232,6 @@ module Toshi
     # begin handshake; send +version+ message
     def send_version
       version = Bitcoin::Protocol::Version.new({
-        :version    => 70001,
         :last_block => Toshi::Models::Block.max_height,
         :from       => "127.0.0.1:#{Bitcoin.network[:default_port]}",
         :to         => @host,

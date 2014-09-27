@@ -138,7 +138,11 @@ module Toshi
       # <height> is this block's height. If nil, will be loaded automatically from the previous block and incremented.
       def self.create_from_block(block, height=nil, branch=Block::MAIN_BRANCH, output_cache=nil, prev_work=0)
         payload = block.payload || block.to_payload
-        RawBlock.new(hsh: block.hash, payload: Sequel.blob(payload)).save unless !RawBlock.where(hsh: block.hash).empty?
+        RawBlock.new(hsh: block.hash, payload: Sequel.blob(payload)).save unless RawBlock.where(hsh: block.hash).any?
+
+        if (block.ver & Bitcoin::Protocol::Block::BLOCK_VERSION_AUXPOW) != 0
+          RawAuxPow.new(block_hsh: block.hash, payload: Sequel.blob(block.aux_pow.to_payload)).save unless RawAuxPow.where(block_hsh: block.hash).any?
+        end
 
         height = height || ((Block.where(hsh: block.prev_block_hex).first.height rescue 0) + 1)
 
