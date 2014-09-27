@@ -199,6 +199,11 @@ module Toshi
       return height_for_block(block_header.sha2_hash)
     end
 
+    # Returns height of the highest block on the main chain.
+    def height_of_main_chain()
+      Toshi::Models::Block.where(branch: Toshi::Models::Block::MAIN_BRANCH).max(:height)
+    end
+
     # Returns previous block header. Allows to make it efficient if block_header caches a reference to a previous block.
     # By default calls block_header_for_hash(<prev hash>)
     def previous_block_header_for_block_header(block_header)

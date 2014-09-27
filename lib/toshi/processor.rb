@@ -1390,7 +1390,7 @@ module Toshi
     def verify_block_version_super_majority(min_version, block_header, min_blocks, max_blocks)
       # Litecoin: temporarily disable v2 block lockin until we are ready for v2 transition
       # https://github.com/litecoin-project/litecoin/commit/5a1f5c332bcf044f79558434ea577dab532912d5
-      return false if Bitcoin.network_name == :litecoin
+      return false if Bitcoin.network_name == :litecoin || is_dogecoin?
 
       found = 0
       i = 0
@@ -1457,9 +1457,6 @@ module Toshi
       # retarget interval in blocks (2016) - how often we change difficulty
       retarget_interval = Bitcoin.network[:retarget_interval]
 
-      # target interval for 2016 blocks in seconds (1209600) - what is the ideal interval between the blocks
-      retarget_time = Bitcoin.network[:retarget_time]
-
       # target interval between blocks (10 minutes)
       target_spacing = Bitcoin.network[:target_spacing]
 
@@ -1470,6 +1467,18 @@ module Toshi
       prev_block_header = @storage.block_header_for_hash(block.prev_block_hex)
       prev_height       = @storage.height_for_block_header(prev_block_header)
       prev_time         = prev_block_header.time
+
+      # Dogecoin allows more frequent retargets for its testnet, but only
+      # after we fixed it at block 157,500.
+      if is_dogecoin?
+        # This maps to line 1,308 of main.cpp
+        if is_testnet? && prev_height >= Bitcoin.network[:reset_target_block] && block.time > (prev_time + (target_spacing*2))
+          return max_target
+        end
+        if (prev_height + 1) > 145000
+          retarget_interval = 1
+        end
+      end
 
       # If this is not 2016th block, find the previous block and use its difficulty.
       # Rules are more complex for testnet.
@@ -1500,8 +1509,10 @@ module Toshi
       # Litecoin fixed the time warp attack: https://litecoin.info/Time_warp_attack
       # https://github.com/litecoin-project/litecoin/commit/b1be77210970a6ceb3680412cc3d2f0dd4ca8fb9
       blockstogoback = retarget_interval - 1
-      if Bitcoin.network_name == :litecoin && (prev_height + 1) != retarget_interval
-        blockstogoback = retarget_interval;
+      if Bitcoin.network_name == :litecoin || is_dogecoin?
+        if (prev_height + 1) != retarget_interval
+          blockstogoback = retarget_interval
+        end
       end
 
       first = prev_block_header
@@ -1516,30 +1527,7 @@ module Toshi
         raise RuntimeError, "should always be able to find previous retarget block (at very least, a genesis one)"
       end
 
-      # actual timespan is 2 weeks (retarget_time)
-      actual_timespan = prev_block_header.time - first.time
-
-      min = retarget_time / 4
-      max = retarget_time * 4
-
-      actual_timespan = min if actual_timespan < min
-      actual_timespan = max if actual_timespan > max
-
-      # It could be a bit confusing: we are adjusting difficulty of the previous block, while logically
-      # we should use difficulty of the previous 2016th block ("first")
-
-      prev_target = Bitcoin.decode_compact_bits(prev_block_header.bits).to_i(16)
-
-      new_target = prev_target * actual_timespan / retarget_time
-
-      # if new target is above the max target, use the
-      if new_target > Bitcoin.decode_compact_bits(max_target).to_i(16)
-        trace_step { "block_next_bits_required: new_target > max_target; returning max_target" }
-        max_target
-      else
-        trace_step { "block_next_bits_required: returning new_target." }
-        Bitcoin.encode_compact_bits(new_target.to_s(16))
-      end
+      Bitcoin.block_new_target(prev_height, prev_block_header.time, prev_block_header.bits, first.time)
     end
 
     # Finds at most 11 blocks starting with this one and returns a median timestamp.
@@ -1563,7 +1551,7 @@ module Toshi
     # Verifies that block hash matches the declared target ("bits")
     # See CheckProofOfWork() in bitcoind.
     def check_proof_of_work(block)
-      if Bitcoin.network_name == :litecoin
+      if Bitcoin.network_name == :litecoin || is_dogecoin?
         actual = block.recalc_block_scrypt_hash.to_i(16)
       else
         actual = block.hash.to_i(16)
@@ -1577,8 +1565,106 @@ module Toshi
         return false
       end
 
+      # Replace calculated PoW with AuxPoW if applicable
+      if Bitcoin.network[:auxpow_chain_id] != nil && (block.ver & Bitcoin::Protocol::Block::BLOCK_VERSION_AUXPOW) > 0
+        actual = get_auxpow_hash(block, actual)
+      end
+
       # Check the POW.
       return (actual <= expected_target)
+    end
+
+    # Extract the hash of the parent block that this block was mined based on.
+    # Returns the native hash of this block if the AuxPoW block cannot be
+    # verified.
+    # TODO: Return/throw something more specific in case of an error
+    def get_auxpow_hash(block, native_hash)
+      if block.aux_pow.nil?
+        log_raw_block_events(block.hash, "Missing AuxPow header")
+        return native_hash
+      end
+
+      aux_pow = block.aux_pow
+
+      if aux_pow.mrkl_index != 0
+        log_raw_block_events(block.hash, "AuxPoW is not a generate")
+        return native_hash
+      end
+
+      if aux_pow.branch.length > 30
+        log_raw_block_events(block.hash, "AuxPoW chain merkle branch too long")
+        return native_hash
+      end
+
+      # Check the transaction is in the parent block merkle tree
+      parent_block_merkle_root = Bitcoin.mrkl_branch_root(aux_pow.branch.map(&:reverse_hth), aux_pow.tx.hash, aux_pow.mrkl_index)
+      if parent_block_merkle_root != aux_pow.parent_block.mrkl_root.reverse.unpack("H*")[0]
+        log_raw_block_events(block.hash, "AuxPoW merkle root incorrect, expected #{aux_pow.parent_block.mrkl_root.reverse.unpack("H*")[0]}, calculated #{parent_block_merkle_root}.")
+      end
+
+      # Find the merged mining header in the coinbase input script
+      merged_mining_header = [0xfa, 0xbe, 'm'.ord, 'm'.ord].pack("C*")
+      script = aux_pow.tx.in[0].script
+      script_idx = script.index(merged_mining_header)
+
+      if script_idx.nil?
+        log_raw_block_events(block.hash, "MergedMiningHeader missing from parent coinbase")
+        return native_hash
+      end
+
+      # Skip past the merged mining header
+      script_idx += merged_mining_header.length
+
+      if !script.index(merged_mining_header, script_idx).nil?
+        log_raw_block_events(block.hash, "Multiple merged mining headers in coinbase")
+        return native_hash
+      end
+
+      # Calculate chain merkle root, which we expect to match in the coinbase transaction.
+      # This associates the mined block with the coinbase transaction.
+      chain_merkle_root = Bitcoin.mrkl_branch_root(aux_pow.aux_branch.map(&:reverse_hth), block.hash, aux_pow.aux_index)
+
+      # Here "chain_merkle_root.length / 2" represents the number of bytes in a hash, and
+      # 8 represents two 4-byte numbers (branch size and nonce value)
+      if script.length - (script_idx + chain_merkle_root.length / 2) < 8
+        log_raw_block_events(block.hash, "AuxPoW missing chain merkle tree size and nonce in parent coinbase")
+        return native_hash
+      end
+
+      tx_root_hash = script.slice(script_idx, chain_merkle_root.length / 2).unpack("H*")[0]
+      script_idx += chain_merkle_root.length / 2
+      if (chain_merkle_root != tx_root_hash)
+        log_raw_block_events(block.hash, "AuxPoW chain merkle root incorrect, expected #{tx_root_hash}, calculated #{chain_merkle_root}.")
+        return native_hash
+      end
+
+      merkle_branch_size = script.slice(script_idx, 4).unpack("V")[0]
+      script_idx += 4
+      if merkle_branch_size != (1 << aux_pow.aux_branch.length)
+        log_raw_block_events(block.hash, "Aux POW merkle branch size does not match parent coinbase, expected #{merkle_branch_size} but found #{(1 << aux_pow.aux_branch.length)}")
+        return native_hash
+      end
+
+      # Choose a pseudo-random slot in the chain merkle tree
+      # but have it be fixed for a size/nonce/chain combination.
+      nonce = script.slice(script_idx, 4).unpack("V")[0]
+      script_idx += 4
+      rand = nonce
+      rand = rand * 1103515245 + 12345
+      rand += Bitcoin.network[:auxpow_chain_id]
+      rand = rand * 1103515245 + 12345
+
+      if (aux_pow.aux_index != (rand % merkle_branch_size))
+        log_raw_block_events(block.hash, "AuxPoW wrong index.")
+        return native_hash
+      end
+
+      # Return the hash of the parent block
+      if Bitcoin.network_name == :litecoin || is_dogecoin?
+        return block.aux_pow.parent_block.recalc_block_scrypt_hash.to_i(16)
+      else
+        return block.aux_pow.parent_block.hash.to_i(16)
+      end
     end
 
     # Minimum amount of work that could possibly be required <time> after minimum work required was <base_work>
@@ -1592,12 +1678,21 @@ module Toshi
         return max_target
       end
 
+      dogecoin_new_difficulty = is_dogecoin? && (@storage.height_of_main_chain() + 1) >= 145000
+
       result = base_work
       while time > 0 && result < max_target
-        # Maximum 400% adjustment...
-        result *= 4
-        # ... in best-case exactly 4-times-normal target time
-        time -= Bitcoin.network[:retarget_time]*4
+        if !dogecoin_new_difficulty
+          # Maximum 400% adjustment...
+          result *= 4
+          # ... in best-case exactly 4-times-normal target time
+          time -= Bitcoin.network[:retarget_time]*4
+        else
+          # Maximum 10% adjustment...
+          result = result * 110 / 100
+          # ... in best-case exactly 4-times-normal target time
+          time -= Bitcoin.network[:retarget_time_new]*4
+        end
       end
       if result > max_target
         result = max_target
@@ -1605,8 +1700,12 @@ module Toshi
       return result
     end
 
+    def is_dogecoin?
+      [:dogecoin, :dogecoin_testnet].include?(Bitcoin.network_name)
+    end
+
     def is_testnet?
-      [:testnet, :testnet3].include?(Bitcoin.network_name)
+      [:testnet, :testnet3, :dogecoin_testnet].include?(Bitcoin.network_name)
     end
 
     def require_standard?
