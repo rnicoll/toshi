@@ -38,6 +38,7 @@ module Toshi
     autoload :Input,                      'toshi/models/input'
     autoload :Output,                     'toshi/models/output'
     autoload :Peer,                       'toshi/models/peer'
+    autoload :RawAuxPow,                  'toshi/models/raw_aux_pow'
     autoload :RawBlock,                   'toshi/models/raw_block'
     autoload :RawTransaction,             'toshi/models/raw_transaction'
     autoload :Transaction,                'toshi/models/transaction'

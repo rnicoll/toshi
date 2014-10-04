@@ -1527,10 +1527,7 @@ module Toshi
     # Verifies that block hash matches the declared target ("bits")
     # See CheckProofOfWork() in bitcoind.
     def check_proof_of_work(block)
-      if is_dogecoin?
-        # TODO: Handle AuxPoW here
-        actual = block.recalc_block_scrypt_hash.to_i(16)
-      elsif Bitcoin.network_name == :litecoin
+      if Bitcoin.network_name == :litecoin || is_dogecoin?
         actual = block.recalc_block_scrypt_hash.to_i(16)
       else
         actual = block.hash.to_i(16)
@@ -1544,8 +1541,106 @@ module Toshi
         return false
       end
 
+      # Replace calculated PoW with AuxPoW if applicable
+      if Bitcoin.network[:auxpow_chain_id] != nil && (block.ver & Bitcoin::Protocol::Block::BLOCK_VERSION_AUXPOW) > 0
+        actual = get_auxpow_hash(block, actual)
+      end
+
       # Check the POW.
       return (actual <= expected_target)
+    end
+
+    # Extract the hash of the parent block that this block was mined based on.
+    # Returns the native hash of this block if the AuxPoW block cannot be
+    # verified.
+    # TODO: Return/throw something more specific in case of an error
+    def get_auxpow_hash(block, native_hash)
+      if block.aux_pow.nil?
+        log_raw_block_events(block.hash, "Missing AuxPow header")
+        return native_hash
+      end
+
+      aux_pow = block.aux_pow
+
+      if aux_pow.mrkl_index != 0
+        log_raw_block_events(block.hash, "AuxPoW is not a generate")
+        return native_hash
+      end
+
+      if aux_pow.branch.length > 30
+        log_raw_block_events(block.hash, "AuxPoW chain merkle branch too long")
+        return native_hash
+      end
+
+      # Check the transaction is in the parent block merkle tree
+      parent_block_merkle_root = Bitcoin.mrkl_branch_root(aux_pow.branch.map(&:reverse_hth), aux_pow.tx.hash, aux_pow.mrkl_index)
+      if parent_block_merkle_root != aux_pow.parent_block.mrkl_root.reverse.unpack("H*")[0]
+        log_raw_block_events(block.hash, "AuxPoW merkle root incorrect, expected #{aux_pow.parent_block.mrkl_root.reverse.unpack("H*")[0]}, calculated #{parent_block_merkle_root}.")
+      end
+
+      # Find the merged mining header in the coinbase input script
+      merged_mining_header = [0xfa, 0xbe, 'm'.ord, 'm'.ord].pack("C*")
+      script = aux_pow.tx.in[0].script
+      script_idx = script.index(merged_mining_header)
+
+      if script_idx.nil?
+        log_raw_block_events(block.hash, "MergedMiningHeader missing from parent coinbase")
+        return native_hash
+      end
+
+      # Skip past the merged mining header
+      script_idx += merged_mining_header.length
+
+      if !script.index(merged_mining_header, script_idx).nil?
+        log_raw_block_events(block.hash, "Multiple merged mining headers in coinbase")
+        return native_hash
+      end
+
+      # Calculate chain merkle root, which we expect to match in the coinbase transaction.
+      # This associates the mined block with the coinbase transaction.
+      chain_merkle_root = Bitcoin.mrkl_branch_root(aux_pow.aux_branch.map(&:reverse_hth), block.hash, aux_pow.aux_index)
+
+      # Here "chain_merkle_root.length / 2" represents the number of bytes in a hash, and
+      # 8 represents two 4-byte numbers (branch size and nonce value)
+      if script.length - (script_idx + chain_merkle_root.length / 2) < 8
+        log_raw_block_events(block.hash, "AuxPoW missing chain merkle tree size and nonce in parent coinbase")
+        return native_hash
+      end
+
+      tx_root_hash = script.slice(script_idx, chain_merkle_root.length / 2).unpack("H*")[0]
+      script_idx += chain_merkle_root.length / 2
+      if (chain_merkle_root != tx_root_hash)
+        log_raw_block_events(block.hash, "AuxPoW chain merkle root incorrect, expected #{tx_root_hash}, calculated #{chain_merkle_root}.")
+        return native_hash
+      end
+
+      merkle_branch_size = script.slice(script_idx, 4).unpack("V")[0]
+      script_idx += 4
+      if merkle_branch_size != (1 << aux_pow.aux_branch.length)
+        log_raw_block_events(block.hash, "Aux POW merkle branch size does not match parent coinbase, expected #{merkle_branch_size} but found #{(1 << aux_pow.aux_branch.length)}")
+        return native_hash
+      end
+
+      # Choose a pseudo-random slot in the chain merkle tree
+      # but have it be fixed for a size/nonce/chain combination.
+      nonce = script.slice(script_idx, 4).unpack("V")[0]
+      script_idx += 4
+      rand = nonce
+      rand = rand * 1103515245 + 12345
+      rand += Bitcoin.network[:auxpow_chain_id]
+      rand = rand * 1103515245 + 12345
+
+      if (aux_pow.aux_index != (rand % merkle_branch_size))
+        log_raw_block_events(block.hash, "AuxPoW wrong index.")
+        return native_hash
+      end
+
+      # Return the hash of the parent block
+      if Bitcoin.network_name == :litecoin || is_dogecoin?
+        return block.aux_pow.parent_block.recalc_block_scrypt_hash.to_i(16)
+      else
+        return block.aux_pow.parent_block.hash.to_i(16)
+      end
     end
 
     # Minimum amount of work that could possibly be required <time> after minimum work required was <base_work>

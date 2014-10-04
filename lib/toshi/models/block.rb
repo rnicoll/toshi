@@ -113,6 +113,10 @@ module Toshi
         Toshi::Models::RawBlock.where(hsh: hsh).first
       end
 
+      def auxpow
+        Toshi::Models::RawAuxPow.where(block_hsh: hsh).first
+      end
+
       # calculate additional fields not part of the protocol
       def self.calculate_additional_fields(block, branch)
         fields = { total_in_value: 0, total_out_value: 0, fees: 0 }
@@ -142,6 +146,10 @@ module Toshi
 
         if (block.ver & Bitcoin::Protocol::Block::BLOCK_VERSION_AUXPOW) != 0
           RawAuxPow.new(block_hsh: block.hash, payload: Sequel.blob(block.aux_pow.to_payload)).save unless RawAuxPow.where(block_hsh: block.hash).any?
+        end
+
+        if (block.ver & Bitcoin::Protocol::Block::BLOCK_VERSION_AUXPOW) != 0
+          RawAuxPow.new(block_hsh: block.hash, payload: Sequel.blob(block.aux_pow.to_payload)).save unless !RawAuxPow.where(block_hsh: block.hash).empty?
         end
 
         height = height || ((Block.where(hsh: block.prev_block_hex).first.height rescue 0) + 1)
