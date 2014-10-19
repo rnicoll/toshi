@@ -567,8 +567,9 @@ module Toshi
     def load_output_cache(txs)
       query = ''
       tx_seen = {}
+      max_query_size = (1024*100)
       txs.each{|tx|
-        if query.bytesize > (1024*512)
+        if query.bytesize > max_query_size
           # Postgres' max stack depth is 2MB by default.
           # Matt's b39 would otherwise crash us here.
           load_output_cache_from_query(query)
@@ -584,7 +585,7 @@ module Toshi
           # Fetch all spent prev outs too.
           next if txin.coinbase?
           next if tx_seen[txin.previous_output]
-          if query.bytesize > (1024*512)
+          if query.bytesize > max_query_size
             load_output_cache_from_query(query)
             query = ' '
           else
