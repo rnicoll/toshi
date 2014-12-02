@@ -1115,7 +1115,23 @@ module Toshi
             end
             script_pubkey = txout.pk_script
             #puts "Script check: #{script_pubkey.inspect}"
-            if !tx.verify_input_signature(i, script_pubkey, block.time)
+
+            # BIP62 check flags
+            # This option determination could perhaps move into its own function
+            if tx.ver < 3
+              opts = {}
+            else
+              opts = {
+                verify_sigpushonly: true,
+                verify_minimaldata: true,
+                verify_cleanstack: true,
+                verify_dersig: true,
+                verify_low_s: true,
+                verify_strictenc: true
+              }
+            end
+
+            if !tx.verify_input_signature(i, script_pubkey, block.time, opts)
               raise TxValidationError, "Script evaluation failed"
               false
             end
@@ -1162,11 +1178,12 @@ module Toshi
         # check size
         return [ false, 'scriptsig-size' ] if txin.script_sig_length > 1650
 
-        # scriptSigs should only push data
+        # scriptSigs should only push data - BIP62 rule #2
         return [ false, 'scriptsig-not-pushonly' ] if !script_is_push_only?(txin.script)
 
         # one known source of tx malleability is a non-canonical push
         # ie. using OP_PUSHDATA2 when you only need to push 40 bytes
+        # BIP62 rule #3
         return [ false, 'scriptsig-non-canonical-push' ] if !script_pushes_are_canonical?(txin.script)
       }
 
