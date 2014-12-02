@@ -1178,13 +1178,14 @@ module Toshi
         # check size
         return [ false, 'scriptsig-size' ] if txin.script_sig_length > 1650
 
+        script = Bitcoin::Script.new(txin.script)
         # scriptSigs should only push data - BIP62 rule #2
-        return [ false, 'scriptsig-not-pushonly' ] if !script_is_push_only?(txin.script)
+        return [ false, 'scriptsig-not-pushonly' ] if !script.is_push_only?
 
         # one known source of tx malleability is a non-canonical push
         # ie. using OP_PUSHDATA2 when you only need to push 40 bytes
         # BIP62 rule #3
-        return [ false, 'scriptsig-non-canonical-push' ] if !script_pushes_are_canonical?(txin.script)
+        return [ false, 'scriptsig-non-canonical-push' ] if !script.pushes_are_canonical?
       }
 
       op_return_count = 0
@@ -1209,55 +1210,6 @@ module Toshi
 
       # all good
       return [ true, nil ]
-    end
-
-    # Inspect pushes in the script
-    def script_check_pushes(script, push_only=true, canonical_only=false)
-      program = script.unpack("C*")
-      until program.empty?
-        opcode = program.shift
-        if opcode > Bitcoin::Script::OP_16
-          return false if push_only
-          next
-        end
-        if opcode < Bitcoin::Script::OP_PUSHDATA1 && opcode > Bitcoin::Script::OP_0
-          # Could have used an OP_n code, rather than a 1-byte push.
-          return false if canonical_only && opcode == 1 && program[0] <= 16
-          program.shift(opcode)
-        end
-        if opcode == Bitcoin::Script::OP_PUSHDATA1
-          len = program.shift(1)[0]
-          # Could have used a normal n-byte push, rather than OP_PUSHDATA1.
-          return false if canonical_only && len < Bitcoin::Script::OP_PUSHDATA1
-          program.shift(len)
-        end
-        if opcode == Bitcoin::Script::OP_PUSHDATA2
-          len = program.shift(2).pack("C*").unpack("v")[0]
-          # Could have used an OP_PUSHDATA1.
-          return false if canonical_only && len <= 0xff
-          program.shift(len)
-        end
-        if opcode == Bitcoin::Script::OP_PUSHDATA4
-          len = program.shift(4).pack("C*").unpack("V")[0]
-          # Could have used an OP_PUSHDATA2.
-          return false if canonical_only && len <= 0xffff
-          program.shift(len)
-        end
-      end
-      true
-    rescue => ex
-      # catch parsing errors
-      false
-    end
-
-    # Verify the script is only pushing data onto the stack
-    def script_is_push_only?(script)
-      script_check_pushes(script, push_only=true, canonical_only=false)
-    end
-
-    # Make sure opcodes used to push data match their intended length ranges
-    def script_pushes_are_canonical?(script)
-      script_check_pushes(script, push_only=false, canonical_only=true)
     end
 
     def txout_is_dust?(txout)
