@@ -1117,19 +1117,7 @@ module Toshi
             #puts "Script check: #{script_pubkey.inspect}"
 
             # BIP62 check flags
-            # This option determination could perhaps move into its own function
-            if tx.ver < 3
-              opts = {}
-            else
-              opts = {
-                verify_sigpushonly: true,
-                verify_minimaldata: true,
-                verify_cleanstack: true,
-                verify_dersig: true,
-                verify_low_s: true,
-                verify_strictenc: true
-              }
-            end
+            opts = get_tx_validity_opts(block, tx)
 
             if !tx.verify_input_signature(i, script_pubkey, block.time, opts)
               raise TxValidationError, "Script evaluation failed"
@@ -1143,6 +1131,34 @@ module Toshi
       self.cache_additional_tx_fields(tx, fee, value_in, value_out)
 
       return true
+    end
+
+    # Get the options to use when checking transaction validity (via verify_input_signature).
+    # Derived from block and transaction versions, on supported networks.
+    def get_tx_validity_opts(block, tx)
+      # Matches BIP62 as of https://github.com/sipa/bips/commit/3b9d5df9f10a0e31cafe56df51ae461c50f380b5
+
+      # BIP62 rules only affect v3 and higher blocks
+      auxpow_version_mask = 0xffffffff ^ Bitcoin::Protocol::Block::BLOCK_VERSION_AUXPOW # Strip the AuxPoW flag from block version
+      return {} unless (block.ver & auxpow_version_mask) >= 3
+
+      # BIP62 rules only "activate" after a 75% majority of the last 1,000 blocks
+      prev_block_header = @storage.block_header_for_hash(block.prev_block_hex)
+      return {} unless verify_block_version_super_majority(3, prev_block_header, 750, 1000)
+
+      if tx.ver == 2
+        return {
+          verify_sigpushonly: true,
+          verify_minimaldata: true,
+          verify_cleanstack: true,
+          verify_dersig: true,
+          verify_low_s: true,
+          verify_strictenc: true
+          # TODO: BIP62 Rule #7
+        }
+      else
+        return {verify_dersig: true, verify_sigpushonly: true}
+      end
     end
 
     # cache these values for use when persisting to the db.
@@ -1339,6 +1355,7 @@ module Toshi
 
       found = 0
       i = 0
+      # TODO: This will likely need to ignore bit 8 (AuxPow) on Dogecoin blocks
       while i < max_blocks && found < min_blocks && block_header
         if block_header.ver >= min_version
           found += 1
