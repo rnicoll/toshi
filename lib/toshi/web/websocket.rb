@@ -2,6 +2,8 @@ require 'faye/websocket'
 
 module Toshi
   module Web
+    class WsApiError < StandardError
+    end
 
     # Websockets Rack Middleware
     class WebSockets
@@ -17,7 +19,7 @@ module Toshi
         @app = app
 
         @connections = []
-        @chan = { blocks: EM::Channel.new, transactions: EM::Channel.new }
+        @chan = { addresses: EM::Channel.new, blocks: EM::Channel.new, transactions: EM::Channel.new }
 
         # client channel listening for processor messages
         @mq_client = RedisMQ::Channel.new(:client){|sender, job|
@@ -26,6 +28,7 @@ module Toshi
             @chan[:blocks].push(job)
           when 'new_transaction'
             @chan[:transactions].push(job)
+            @chan[:addresses].push(job)
           end
         }
 
@@ -61,6 +64,8 @@ module Toshi
 
         @connection_manager = connection_manager
         @connection_manager.connections << self
+
+        @addresses = []
       end
 
       def on_close(event)
@@ -80,33 +85,62 @@ module Toshi
           return nil
         end
 
-        if cmd.key?('subscribe')
-          case cmd['subscribe']
-            when 'blocks'
-              subscribe_channel(:blocks, :on_channel_send_block)
-            when 'transactions'
-              subscribe_channel(:transactions, :on_channel_send_transaction)
-          end
-        end
+        begin
+          if cmd.key?('subscribe')
+            case cmd['subscribe']
+              when 'address'
+                raise WsApiError, 'no address specified' unless cmd.key?('address')
 
-        if cmd.key?('unsubscribe')
-          case cmd['unsubscribe']
-            when 'blocks'
-              unsubscribe_channel(:blocks)
-            when 'transactions'
-              unsubscribe_channel(:transactions)
-          end
-        end
+                address = cmd['address']
+                raise WsApiError, 'invalid address' unless Bitcoin::valid_address?(address)
+                raise WsApiError, 'unsupported address type' unless Bitcoin::address_type(address) == :hash160
 
-        if cmd.key?('fetch')
-          case cmd['fetch']
-            when 'latest_block'
-              on_fetch_latest_block()
-            when 'latest_transaction'
-              on_fetch_latest_transaction
+                @addresses << address
+                subscribe_channel(:addresses, :on_channel_send_transaction_address)
+              when 'blocks'
+                subscribe_channel(:blocks, :on_channel_send_block)
+              when 'transactions'
+                subscribe_channel(:transactions, :on_channel_send_transaction)
+              else
+                raise WsApiError, "unknown subscription"
+            end
           end
-        end
 
+          if cmd.key?('unsubscribe')
+            case cmd['unsubscribe']
+              when 'address'
+                raise WsApiError, 'no address specified' unless cmd.key?('address')
+                address = cmd['address']
+                raise WsApiError, 'invalid address' unless Bitcoin::valid_address?(address)
+
+                @addresses.delete(address)
+                if @addresses.empty?
+                  unsubscribe_channel(:addresses)
+                end
+              when 'blocks'
+                unsubscribe_channel(:blocks)
+              when 'transactions'
+                unsubscribe_channel(:transactions)
+              else
+                raise WsApiError, "unknown subscription"
+            end
+          end
+
+          if cmd.key?('fetch')
+            case cmd['fetch']
+              when 'latest_block'
+                on_fetch_latest_block()
+              when 'latest_transaction'
+                on_fetch_latest_transaction
+              else
+                raise WsApiError, 'unknown entity type'
+            end
+          end
+        rescue Toshi::Web::WsApiError => e
+          puts e.to_s
+          @socket.send({ error: e.to_s }.to_json)
+          return nil
+        end
       end
 
       def write_socket(data)
@@ -118,6 +152,36 @@ module Toshi
         block = Toshi::Models::Block.where(hsh: msg['hash']).first
         return unless block
         write_socket({ subscription: 'blocks', data: block.to_hash }.to_json)
+      end
+
+      # send a transaction if it matches address(es) this socket is interested in
+      def on_channel_send_transaction_address(msg)
+        tx = Toshi::Models::UnconfirmedTransaction.from_hsh(msg['hash'])
+        return unless tx
+
+        in_matches = []
+        out_matches = []
+
+        tx.outputs.each do |output|
+          if output.type == 'hash160'
+            script = Bitcoin::Script.new(output.script)
+            if @addresses.include?(script.get_hash160_address)
+              out_matches << script.get_hash160_address
+            end
+          end
+        end
+
+        tx.input_outputs.each do |output|
+          if output.type == 'hash160'
+            script = Bitcoin::Script.new(output.script)
+            if @addresses.include?(script.get_hash160_address)
+              in_matches << script.get_hash160_address
+            end
+          end
+        end
+        return if in_matches.empty? && out_matches.empty?
+
+        write_socket({ subscription: 'address', in_matches: in_matches, out_matches: out_matches, data: tx.to_hash }.to_json)
       end
 
       # send a transaction to a connected websocket

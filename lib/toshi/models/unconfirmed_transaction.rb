@@ -29,6 +29,11 @@ module Toshi
         UnconfirmedInput.where(hsh: hsh).order(:position)
       end
 
+      # Fetches the outputs to this transaction's inputs
+      def input_outputs
+        UnconfirmedOutput.join(:unconfirmed_inputs, :prev_out => :hsh, :index => :position).select_all(:unconfirmed_outputs).where(:unconfirmed_inputs__hsh => hsh)
+      end
+
       def mark_spent_outputs
         # FIXME: there's probably a nicer way to do this with the interface
         query = "update unconfirmed_outputs

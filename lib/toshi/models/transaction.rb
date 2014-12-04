@@ -34,6 +34,11 @@ module Toshi
         Input.where(hsh: hsh).order(:position)
       end
 
+      # Fetches the outputs to this transaction's inputs
+      def input_outputs
+        Output.join(:inputs, :prev_out => :hsh, :index => :position).select_all(:outputs).where(:inputs__hsh => hsh)
+      end
+
       def outputs
         Output.where(hsh: hsh).order(:position)
       end
