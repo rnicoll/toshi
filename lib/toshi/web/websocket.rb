@@ -65,7 +65,7 @@ module Toshi
         @connection_manager = connection_manager
         @connection_manager.connections << self
 
-        @addresses = []
+        @addresses = {}
       end
 
       def on_close(event)
@@ -95,7 +95,7 @@ module Toshi
                 raise WsApiError, 'invalid address' unless Bitcoin::valid_address?(address)
                 raise WsApiError, 'unsupported address type' unless Bitcoin::address_type(address) == :hash160
 
-                @addresses << address
+                @addresses[address] = true
                 subscribe_channel(:addresses, :on_channel_send_transaction_address)
               when 'blocks'
                 subscribe_channel(:blocks, :on_channel_send_block)
@@ -165,17 +165,19 @@ module Toshi
         tx.outputs.each do |output|
           if output.type == 'hash160'
             script = Bitcoin::Script.new(output.script)
-            if @addresses.include?(script.get_hash160_address)
-              out_matches << script.get_hash160_address
+            address = script.get_hash160_address
+            if @addresses.key?(address)
+              out_matches << address
             end
           end
         end
 
-        tx.input_outputs.each do |output|
+        tx.previous_outputs.each do |output|
           if output.type == 'hash160'
             script = Bitcoin::Script.new(output.script)
-            if @addresses.include?(script.get_hash160_address)
-              in_matches << script.get_hash160_address
+            address = script.get_hash160_address
+            if @addresses.key?(address)
+              in_matches << address
             end
           end
         end

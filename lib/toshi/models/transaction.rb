@@ -35,7 +35,7 @@ module Toshi
       end
 
       # Fetches the outputs to this transaction's inputs
-      def input_outputs
+      def previous_outputs
         Output.join(:inputs, :prev_out => :hsh, :index => :position).select_all(:outputs).where(:inputs__hsh => hsh)
       end
 

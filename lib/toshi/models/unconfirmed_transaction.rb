@@ -30,7 +30,7 @@ module Toshi
       end
 
       # Fetches the outputs to this transaction's inputs
-      def input_outputs
+      def previous_outputs
         UnconfirmedOutput.join(:unconfirmed_inputs, :prev_out => :hsh, :index => :position).select_all(:unconfirmed_outputs).where(:unconfirmed_inputs__hsh => hsh)
       end
 
