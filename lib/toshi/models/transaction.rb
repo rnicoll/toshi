@@ -39,6 +39,12 @@ module Toshi
         Output.join(:inputs, :prev_out => :hsh, :index => :position).select_all(:outputs).where(:inputs__hsh => hsh)
       end
 
+      # Fetch a list of addresses involved in this transaction
+      def affected_addresses
+        Address.join(:address_ledger_entries, :address_id => :id)
+          .where(transaction_id: self.id).select_map(:address)
+      end
+
       def outputs
         Output.where(hsh: hsh).order(:position)
       end

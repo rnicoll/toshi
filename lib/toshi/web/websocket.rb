@@ -93,7 +93,7 @@ module Toshi
 
                 address = cmd['address']
                 raise WsApiError, 'invalid address' unless Bitcoin::valid_address?(address)
-                raise WsApiError, 'unsupported address type' unless Bitcoin::address_type(address) == :hash160
+                raise WsApiError, 'unsupported address type' unless Bitcoin::address_type(address) == :hash160 # This can be removed when other address types are tested
 
                 @addresses[address] = true
                 subscribe_channel(:addresses, :on_channel_send_transaction_address)
@@ -159,31 +159,12 @@ module Toshi
         tx = Toshi::Models::UnconfirmedTransaction.from_hsh(msg['hash'])
         return unless tx
 
-        in_matches = []
-        out_matches = []
-
-        tx.outputs.each do |output|
-          if output.type == 'hash160'
-            script = Bitcoin::Script.new(output.script)
-            address = script.get_hash160_address
-            if @addresses.key?(address)
-              out_matches << address
-            end
+        tx.affected_addresses.each do |address|
+          if @addresses.key?(address)
+            write_socket({ subscription: 'address', data: tx.to_hash }.to_json)
+            return
           end
         end
-
-        tx.previous_outputs.each do |output|
-          if output.type == 'hash160'
-            script = Bitcoin::Script.new(output.script)
-            address = script.get_hash160_address
-            if @addresses.key?(address)
-              in_matches << address
-            end
-          end
-        end
-        return if in_matches.empty? && out_matches.empty?
-
-        write_socket({ subscription: 'address', in_matches: in_matches, out_matches: out_matches, data: tx.to_hash }.to_json)
       end
 
       # send a transaction to a connected websocket

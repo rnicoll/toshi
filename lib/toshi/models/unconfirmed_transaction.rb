@@ -34,6 +34,12 @@ module Toshi
         UnconfirmedOutput.join(:unconfirmed_inputs, :prev_out => :hsh, :index => :position).select_all(:unconfirmed_outputs).where(:unconfirmed_inputs__hsh => hsh)
       end
 
+      # Fetch a list of addresses involved in this transaction
+      def affected_addresses
+        UnconfirmedAddress.join(:unconfirmed_ledger_entries, :address_id => :id)
+          .where(transaction_id: self.id).select_map(:address)
+      end
+
       def mark_spent_outputs
         # FIXME: there's probably a nicer way to do this with the interface
         query = "update unconfirmed_outputs
