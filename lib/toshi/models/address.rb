@@ -61,14 +61,14 @@ module Toshi
         addresses.each{|address|
           hash = {}
           hash[:hash] = address.address
-          hash[:balance] = address.balance
-          hash[:received] = address.total_received
-          hash[:sent] = address.total_sent
+          hash[:balance] = address.balance.round
+          hash[:received] = address.total_received.round
+          hash[:sent] = address.total_sent.round
 
           unconfirmed_address = Toshi::Models::UnconfirmedAddress.where(address: address.address).first
-          hash[:unconfirmed_received] = unconfirmed_address ? unconfirmed_address.total_received : 0
-          hash[:unconfirmed_sent] = unconfirmed_address ? unconfirmed_address.total_sent(address) : 0
-          hash[:unconfirmed_balance] = unconfirmed_address ? unconfirmed_address.balance(address) : 0
+          hash[:unconfirmed_received] = unconfirmed_address ? unconfirmed_address.total_received.round : 0
+          hash[:unconfirmed_sent] = unconfirmed_address ? unconfirmed_address.total_sent(address).round : 0
+          hash[:unconfirmed_balance] = unconfirmed_address ? unconfirmed_address.balance(address).round : 0
 
           if options[:show_txs]
             if unconfirmed_address
